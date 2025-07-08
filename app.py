@@ -4,6 +4,8 @@ import os
 from datetime import datetime
 import secrets
 import string
+import hashlib
+from database import SecureTokenStorage
 
 # Page configuration
 st.set_page_config(
@@ -87,6 +89,9 @@ if 'user_authenticated' not in st.session_state:
 if 'pat_token' not in st.session_state:
     st.session_state.pat_token = None
 
+# Initialize secure token storage
+token_storage = SecureTokenStorage()
+
 def go_back():
     """Navigate to the previous step"""
     if st.session_state.current_step == 'login':
@@ -105,26 +110,19 @@ def generate_pat_token():
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(32))
 
-def save_token_to_file(token, option):
-    """Save token to a JSON file"""
-    token_data = {
-        'token': token,
-        'generation_method': option,
-        'created_at': datetime.now().isoformat(),
-        'user_id': st.session_state.get('user_id', 'unknown')
-    }
-    
-    os.makedirs('data', exist_ok=True)
-    with open('data/token_data.json', 'w') as f:
-        json.dump(token_data, f, indent=2)
+def save_token_to_database(token, option):
+    """Save token securely to database"""
+    user_id = st.session_state.get('user_id', 'unknown')
+    return token_storage.save_token(user_id, token, option)
 
-def load_token_from_file():
-    """Load token from JSON file"""
-    try:
-        with open('data/token_data.json', 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+def load_token_from_database():
+    """Load token securely from database"""
+    user_id = st.session_state.get('user_id', 'unknown')
+    return token_storage.get_token(user_id)
+
+def hash_password(password):
+    """Hash password for secure storage"""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def welcome_page():
     """First page - Welcome and token option selection"""
@@ -186,10 +184,15 @@ def login_page():
         
         if submit_button:
             if username and password:  # Simple validation
-                st.session_state.user_authenticated = True
-                st.session_state.user_id = username
-                st.session_state.current_step = 'token_setup'
-                st.rerun()
+                # Hash password and verify against database
+                password_hash = hash_password(password)
+                if token_storage.verify_user(username, password_hash):
+                    st.session_state.user_authenticated = True
+                    st.session_state.user_id = username
+                    st.session_state.current_step = 'token_setup'
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
             else:
                 st.error("Please enter both username and password.")
 
@@ -205,7 +208,7 @@ def token_setup_page():
         # Auto-generate token
         if st.session_state.pat_token is None:
             st.session_state.pat_token = generate_pat_token()
-            save_token_to_file(st.session_state.pat_token, 'auto')
+            save_token_to_database(st.session_state.pat_token, 'auto')
         
         st.markdown("""
         <div class="success-message">
@@ -239,7 +242,7 @@ def token_setup_page():
             if save_button:
                 if token_input:
                     st.session_state.pat_token = token_input
-                    save_token_to_file(token_input, 'manual')
+                    save_token_to_database(token_input, 'manual')
                     st.success("✅ Token saved successfully!")
                     
                     if st.button("Continue to Dashboard", use_container_width=True):
@@ -272,14 +275,14 @@ def dashboard_page():
         st.write(f"**Token Method:** {st.session_state.token_option.title()}")
         
         # Load and display token info
-        token_data = load_token_from_file()
+        token_data = load_token_from_database()
         if token_data:
             st.write(f"**Token Created:** {token_data['created_at'][:19]}")
     
     with col2:
         st.subheader("Quick Actions")
         if st.button("View Token Info", use_container_width=True):
-            token_data = load_token_from_file()
+            token_data = load_token_from_database()
             if token_data:
                 st.json(token_data)
         
